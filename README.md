@@ -45,7 +45,6 @@ Cada mudança é rastreada em um repositório Git, com branches, pull requests e
 2.3. Estrutura do Repositório
 A estrutura do repositório deve ser organizada da seguinte forma:
 
-Copy
 state-machine/
   ├── state-machine.json          # Definição da State Machine
   ├── cloudformation-template.yml # Template de CloudFormation
@@ -58,6 +57,7 @@ state-machine/
   ├── tests/                      # Testes automatizados
   │   └── test-state-machine.js
   └── README.md                   # Documentação do projeto
+
 3. CI/CD com GitHub Actions e AWS CLI
 3.1. O que é GitHub Actions?
 GitHub Actions é uma ferramenta de CI/CD integrada ao GitHub, que permite automatizar workflows de build, teste e deploy.
