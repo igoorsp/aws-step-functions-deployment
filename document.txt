@@ -1,0 +1,375 @@
+Documentação de Versionamento e Deploy - AWS Step Functions (com 4 Lambdas, 1 S3 e 1 DynamoDB)
+Este documento descreve como gerenciar o fluxo de versionamento, empacotamento, deploy em múltiplos ambientes, controle de versão e implementação de CI/CD para um projeto que contém:
+
+1 Step Functions orquestrando
+4 Lambdas
+1 Bucket S3
+1 Tabela DynamoDB
+Segue as melhores práticas recomendadas pela AWS e padrões de mercado.
+
+Índice
+Estrutura de Pastas do Projeto
+Recursos que Serão Criados
+Versionamento e Branching Strategy
+Configuração de Múltiplos Ambientes
+Uso do Terraform
+Fluxo de Trabalho (CI/CD) no GitHub Actions
+Passo a Passo de Deploy Local (Manual)
+Validação de Versão do Repositório vs. AWS
+Melhores Práticas para Step Functions e Serviços Integrados
+Conclusão
+1. Estrutura de Pastas do Projeto
+Abaixo, um modelo de organização de pastas que separa a infraestrutura (Terraform), as definições das Step Functions e o código das Lambdas:
+
+css
+Copiar
+Editar
+.
+├── lambdas/
+│   ├── lambda1/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   ├── lambda2/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   ├── lambda3/
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   └── lambda4/
+│       ├── main.py
+│       └── requirements.txt
+│
+├── step-functions/
+│   └── my-step-function/
+│       ├── definition.asl.json
+│       └── README.md
+│
+├── terraform/
+│   ├── modules/
+│   │   ├── step-function/
+│   │   │   ├── main.tf
+│   │   │   ├── variables.tf
+│   │   │   └── outputs.tf
+│   │   ├── lambda/
+│   │   │   ├── main.tf
+│   │   │   ├── variables.tf
+│   │   │   └── outputs.tf
+│   │   ├── s3/
+│   │   │   ├── main.tf
+│   │   │   ├── variables.tf
+│   │   │   └── outputs.tf
+│   │   └── dynamodb/
+│   │       ├── main.tf
+│   │       ├── variables.tf
+│   │       └── outputs.tf
+│   │
+│   ├── env/
+│   │   ├── dev/
+│   │   │   ├── main.tf
+│   │   │   ├── variables.tfvars
+│   │   │   └── backend.tf
+│   │   ├── qa/
+│   │   │   ├── main.tf
+│   │   │   ├── variables.tfvars
+│   │   │   └── backend.tf
+│   │   └── prod/
+│   │       ├── main.tf
+│   │       ├── variables.tfvars
+│   │       └── backend.tf
+│   │
+│   ├── providers.tf
+│   └── versions.tf
+│
+├── .github/
+│   └── workflows/
+│       └── ci-cd.yml
+│
+└── README.md
+Destaques:
+lambdas/: Cada Lambda em sua pasta, com main.py e requirements.txt.
+step-functions/my-step-function/definition.asl.json: Arquivo ASL (Amazon States Language) descrevendo as transições, inclusive chamadas para Lambdas, S3 e DynamoDB.
+terraform/modules/: Cada serviço (Step Function, Lambda, S3, DynamoDB) pode ser abstraído em um módulo para reaproveitamento e manutenibilidade.
+terraform/env/{ENV}/: Diretórios com configurações específicas de cada ambiente (Dev, QA, Prod).
+2. Recursos que Serão Criados
+4 Lambdas
+Funções construídas em Python (exemplo).
+Cada Lambda possui seu requirements.txt (bibliotecas) e main.py (handler).
+1 S3 Bucket
+Pode ser usado para armazenar arquivos temporários/processados.
+1 Tabela DynamoDB
+Armazenamento de dados de estado, logs customizados ou qualquer informação necessária.
+Step Function
+Orquestra as chamadas das 4 Lambdas, S3 (por meio da API) e DynamoDB.
+3. Versionamento e Branching Strategy
+3.1. Estrutura de Branches
+main: Sempre pronta para produção (código estável).
+develop (opcional): Para integrações contínuas.
+Branches de feature: Criadas a partir de develop (ou main, se não houver develop).
+Branches de release: Criadas a partir de develop para estabilizar o código antes de ir para main.
+Branches de hotfix: Criadas a partir de main para correções emergenciais.
+3.2. Controle de Versão
+Tags semânticas: v1.0.0, v1.1.0, etc.
+Versionar infra e lambdas no mesmo repositório facilita rastreabilidade.
+4. Configuração de Múltiplos Ambientes
+Em cada diretório (dev, qa, prod):
+
+backend.tf: Define onde o estado Terraform será armazenado (ex.: S3 + DynamoDB lock).
+main.tf: Chama os módulos (step-function, lambda, s3, dynamodb) configurando as variáveis necessárias.
+variables.tfvars: Contém valores específicos (nomes, ARNs, configurações de capacity do DynamoDB, etc.).
+Exemplo (no dev/main.tf):
+
+hcl
+Copiar
+Editar
+module "s3_bucket" {
+  source = "../../modules/s3"
+
+  bucket_name = "my-bucket-dev"
+}
+
+module "dynamo_table" {
+  source = "../../modules/dynamodb"
+
+  table_name          = "my-table-dev"
+  read_capacity_unit  = 5
+  write_capacity_unit = 5
+}
+
+module "lambda1" {
+  source      = "../../modules/lambda"
+  function_id = "lambda1"
+  lambda_name = "my-lambda1-dev"
+  source_path = "${path.root}/../../../lambdas/lambda1"
+  # ... e outras variáveis
+}
+
+# Repita para as outras lambdas...
+
+module "step_function" {
+  source = "../../modules/step-function"
+
+  step_function_name   = "my-step-function-dev"
+  step_function_role_arn = module.iam_role_sfn.arn
+  step_function_project   = "my-step-function"
+  # ...
+}
+5. Uso do Terraform
+5.1. Módulos de Exemplo
+Módulo Lambda (modules/lambda/main.tf):
+
+hcl
+Copiar
+Editar
+resource "aws_lambda_function" "this" {
+  function_name = var.lambda_name
+  role          = var.lambda_role_arn
+  handler       = "main.handler"
+  runtime       = "python3.9"
+  # Zip gerado localmente (ou via pipeline)
+  filename      = "${var.source_path}/package.zip"
+  
+  environment {
+    variables = {
+      DYNAMODB_TABLE = var.dynamodb_table
+      S3_BUCKET      = var.s3_bucket
+      # ...
+    }
+  }
+  # ...
+}
+Aqui você pode ter um null_resource + local-exec que faz o build do package, instala libs etc., dependendo do seu fluxo.
+Módulo S3 (modules/s3/main.tf):
+
+hcl
+Copiar
+Editar
+resource "aws_s3_bucket" "this" {
+  bucket = var.bucket_name
+  acl    = "private"
+}
+Módulo DynamoDB (modules/dynamodb/main.tf):
+
+hcl
+Copiar
+Editar
+resource "aws_dynamodb_table" "this" {
+  name         = var.table_name
+  billing_mode = "PROVISIONED"
+  read_capacity  = var.read_capacity_unit
+  write_capacity = var.write_capacity_unit
+  hash_key       = "PK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+}
+Módulo Step Function (modules/step-function/main.tf):
+
+hcl
+Copiar
+Editar
+resource "aws_sfn_state_machine" "this" {
+  name       = var.step_function_name
+  role_arn   = var.step_function_role_arn
+  definition = file("${path.module}/../../step-functions/${var.step_function_project}/definition.asl.json")
+  # ...
+}
+5.2. Comandos Principais
+terraform init
+terraform plan
+terraform apply
+6. Fluxo de Trabalho (CI/CD) no GitHub Actions
+Exemplo de pipeline (.github/workflows/ci-cd.yml):
+
+yaml
+Copiar
+Editar
+name: CI/CD
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: "3.9"
+
+      - name: Install dependencies and build Lambdas
+        run: |
+          # Exemplo: instale dependências e gere o package.zip para cada lambda
+          cd lambdas/lambda1
+          pip install -r requirements.txt -t package
+          cp main.py package/
+          cd package
+          zip -r ../package.zip .
+          cd ../../..
+
+          # Repita o processo para as outras lambdas
+          # ...
+      
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.0
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform/env/dev
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ./terraform/env/dev
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+        working-directory: ./terraform/env/dev
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve tfplan
+        working-directory: ./terraform/env/dev
+Possíveis extensões:
+
+Ter vários jobs ou estágios, como “Build” -> “Test” -> “Plan” -> “Apply”.
+Separar ambientes (dev, qa, prod) em jobs diferentes, cada um com seu caminho de tfvars e backend.
+7. Passo a Passo de Deploy Local (Manual)
+Clonar o repositório:
+bash
+Copiar
+Editar
+git clone https://github.com/sua-org/seu-repo.git
+cd seu-repo
+Build local das Lambdas (caso deseje fazer manualmente):
+bash
+Copiar
+Editar
+cd lambdas/lambda1
+pip install -r requirements.txt -t package
+cp main.py package/
+cd package
+zip -r ../package.zip .
+cd ../../..
+# Repita para as demais lambdas
+Configurar credenciais AWS:
+bash
+Copiar
+Editar
+aws configure
+Ou exporte as variáveis AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION.
+Ir até o diretório de ambiente:
+bash
+Copiar
+Editar
+cd terraform/env/dev
+Inicializar Terraform:
+bash
+Copiar
+Editar
+terraform init
+Plan:
+bash
+Copiar
+Editar
+terraform plan -out=tfplan
+Apply:
+bash
+Copiar
+Editar
+terraform apply -auto-approve tfplan
+Verifique no Console da AWS (ou via AWS CLI) se a Step Function, Lambdas, S3 e DynamoDB foram criados corretamente.
+8. Validação de Versão do Repositório vs. AWS
+Para garantir que o que está no repositório bate com o que está em AWS:
+
+Terraform Plan recorrente
+Se não houver mudanças a aplicar, o ambiente está em dia.
+Tag de versão no Terraform
+Use uma tag (ex. Version = v1.2.0) em cada recurso.
+Depois, liste no console AWS ou via CLI, conferindo se a tag corresponde à versão do Git.
+Política de somente Terraform
+Não alterar manualmente Lambdas, Step Functions, S3 ou DynamoDB no console.
+Qualquer drift será detectado no terraform plan.
+9. Melhores Práticas para Step Functions e Serviços Integrados
+State Machine
+Mantenha o ASL (definition.asl.json) em versão única e referenciada no Terraform.
+Configure Retry e Catch para lidar com exceções nas chamadas a Lambda, S3, DynamoDB.
+Lambdas
+Usar layers quando possível, se bibliotecas pesadas forem compartilhadas.
+Monitorar via CloudWatch Logs e, se necessário, X-Ray para tracing.
+Ajustar timeout e memory conforme necessidade.
+S3
+Definir versionamento do bucket, se for necessário rastrear alterações.
+Políticas de IAM e SSE (Server-Side Encryption) para segurança.
+DynamoDB
+Definir keys com atenção. Se for um caso de alta escala, considerar WCU/RCU com autoscaling.
+Monitorar throttling, latência e uso de indexes (LSI, GSI).
+IAM
+Fornecer somente permissões mínimas aos serviços, usando roles separadas para Step Functions e Lambdas.
+Observabilidade
+CloudWatch Alarms para falhas repetidas.
+Métricas de Lambda (invocações, erros, cold starts) e Step Functions (ExecutionFailed).
+10. Conclusão
+Este guia completo demonstra como estruturar um projeto com AWS Step Functions que orquestra 4 Lambdas, 1 S3 e 1 DynamoDB com:
+
+Terraform como Infraestrutura como Código (IaC).
+AWS CLI para verificações pontuais.
+GitHub como repositório.
+GitHub Actions para automação de build, testes, validações e deploy.
+Seguindo esse processo, você garante rastreabilidade, consistência e uma implantação confiável de suas soluções serverless na AWS.
